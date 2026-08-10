@@ -1,0 +1,24 @@
+{
+  "name": "@takosjp/takosumi-dev-server",
+  "version": "0.1.0",
+  "description": "Product-neutral local development server for Takosumi public contracts",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "bin": {
+    "takosumi-dev-server": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "check:types": "bunx tsc --noEmit",
+    "fmt:check": "git diff --check $(git hash-object -t tree /dev/null) -- .",
+    "build": "bun build src/index.ts --target=bun --outdir=dist",
+    "check": "bun run fmt:check && bun run check:types && bun run test && bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.19",
+    "typescript": "^5.9.2"
+  }
+}

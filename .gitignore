@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.takosumi-dev-server/
+*.local.json
+*.log

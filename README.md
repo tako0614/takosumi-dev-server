@@ -15,7 +15,7 @@ Takosumi の公開 wire contract をローカル開発で再現する、product-
 
 - OpenTofu execution、provider credential、production Resource lifecycle
 - audit / billing / recovery evidence
-- Takosumi OSS や Takosumi Cloud の代替
+- Takosumi OSS や Takosumi Hosted の代替
 
 そのため discovery は `stacks=false`、`opentofu_runner=false`、`interfaces=true` を返します。simulation route が成功しても infrastructure が作られたことは意味しません。
 

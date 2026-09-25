@@ -6,7 +6,7 @@
 
 | Surface | Routes | Semantics |
 | --- | --- | --- |
-| Discovery | `/.well-known/takosumi`, `/v1/capabilities` | 実装済み capability だけを広告 |
+| Discovery | `/.well-known/takosumi`, `/v1/capabilities` | capability の contract shape を広告。formAvailability は inline の `forms` データを返す descriptor であり、advertise される `/v1/form-availability` route は未実装 (501) |
 | OIDC / OAuth | discovery, authorize, token, JWKS, UserInfo, revoke, introspect | 固定 Principal、自動承認、PKCE S256、pairwise subject |
 | Workspace | `/api/v1/workspaces...` | bounded local fixture state |
 | Source / Capsule | list/create/read, source sync, plan/apply | local ledger + no-infrastructure simulation |

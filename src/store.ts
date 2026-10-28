@@ -1,5 +1,6 @@
 import type {
   DevCapsule,
+  DevCapsuleMember,
   DevFixture,
   DevInterface,
   DevInterfaceBinding,
@@ -33,6 +34,7 @@ export function defaultFixture(): MutableDevFixture {
     memberships: { [workspace.id]: [principal.sub] },
     sources: [],
     capsules: [],
+    capsuleMembers: [],
     runs: [],
     interfaces: [],
     bindings: [],
@@ -67,6 +69,10 @@ export class DevStore {
 
   canAccessWorkspace(subject: string, workspaceId: string): boolean {
     return this.#state.memberships[workspaceId]?.includes(subject) ?? false;
+  }
+
+  workspaceMemberSubjects(workspaceId: string): string[] {
+    return [...(this.#state.memberships[workspaceId] ?? [])];
   }
 
   listWorkspaces(subject: string): DevWorkspace[] {
@@ -122,6 +128,14 @@ export class DevStore {
 
   listCapsules(workspaceId: string): DevCapsule[] {
     return this.#state.capsules.filter((entry) => entry.workspaceId === workspaceId);
+  }
+
+  capsules(): DevCapsule[] {
+    return [...this.#state.capsules];
+  }
+
+  capsuleMembers(capsuleId: string): DevCapsuleMember[] {
+    return this.#state.capsuleMembers.filter((entry) => entry.capsuleId === capsuleId);
   }
 
   capsule(id: string): DevCapsule | undefined {
@@ -218,6 +232,7 @@ function normalizeFixture(input: Partial<DevFixture>): MutableDevFixture {
     memberships: Object.fromEntries(Object.entries(input.memberships ?? defaults.memberships).map(([key, value]) => [key, [...value]])),
     sources: [...(input.sources ?? [])],
     capsules: [...(input.capsules ?? [])],
+    capsuleMembers: [...(input.capsuleMembers ?? [])],
     runs: [...(input.runs ?? [])],
     interfaces: [...(input.interfaces ?? [])],
     bindings: [...(input.bindings ?? [])],

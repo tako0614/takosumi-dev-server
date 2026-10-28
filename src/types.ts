@@ -18,7 +18,8 @@ export interface DevWorkspace {
 
 export interface DevCapsule {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly workspaceId?: string;
+  readonly ownerAccountId?: string;
   readonly projectId: string;
   readonly name: string;
   readonly slug: string;
@@ -29,6 +30,12 @@ export interface DevCapsule {
   readonly status: "pending" | "active" | "stale" | "error" | "disabled" | "destroyed";
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface DevCapsuleMember {
+  readonly capsuleId: string;
+  readonly accountId: string;
+  readonly status: "active" | "invited";
 }
 
 export interface DevSource {
@@ -117,6 +124,7 @@ export interface DevFixture {
   readonly memberships: Readonly<Record<string, readonly string[]>>;
   readonly sources: readonly DevSource[];
   readonly capsules: readonly DevCapsule[];
+  readonly capsuleMembers?: readonly DevCapsuleMember[];
   readonly runs: readonly DevRun[];
   readonly interfaces: readonly DevInterface[];
   readonly bindings: readonly DevInterfaceBinding[];
@@ -128,6 +136,7 @@ export interface MutableDevFixture {
   memberships: Record<string, string[]>;
   sources: DevSource[];
   capsules: DevCapsule[];
+  capsuleMembers: DevCapsuleMember[];
   runs: DevRun[];
   interfaces: DevInterface[];
   bindings: DevInterfaceBinding[];

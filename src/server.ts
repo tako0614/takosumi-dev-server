@@ -1,6 +1,6 @@
 import { DevOidcProvider } from "./oidc.ts";
 import { DevStore, id, slug } from "./store.ts";
-import { TAKOSUMI_API_VERSION, type DevInterface, type DevInterfaceBinding } from "./types.ts";
+import { TAKOSUMI_API_VERSION, type DevCapsule, type DevInterface, type DevInterfaceBinding } from "./types.ts";
 
 const DEFAULT_BOOTSTRAP_TOKEN = "takosumi-dev-token";
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -83,6 +83,25 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
   const actor = authenticate(request, context);
   if (!actor) return apiError("unauthenticated", "Bearer authentication is required", 401);
 
+  if (url.pathname === "/api/v1/apps" && request.method === "GET") {
+    return listApps(url, actor, context);
+  }
+
+  const appMembersMatch = /^\/api\/v1\/capsules\/([^/]+)\/members$/u.exec(url.pathname);
+  if (appMembersMatch && request.method === "GET") {
+    return listAppMembers(decode(appMembersMatch[1]!), actor, context);
+  }
+
+  if (url.pathname === "/api/v1/connections" && request.method === "GET") {
+    // Development fixtures deliberately contain no provider credentials or connection authority.
+    return json({ connections: [] });
+  }
+
+  if (url.pathname === "/api/v1/usage" && request.method === "GET") {
+    // The fixture has no billing or usage records; never infer a payer from a legacy Workspace.
+    return json({ usage: [] });
+  }
+
   if (url.pathname === "/api/v1/workspaces" && request.method === "GET") {
     return json({ workspaces: context.store.listWorkspaces(actor.subject) });
   }
@@ -109,7 +128,7 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
     const workspaceId = decode(capsulesMatch[1]!);
     const denied = workspaceAccess(context.store, actor.subject, workspaceId);
     if (denied) return denied;
-    if (request.method === "GET") return json({ capsules: context.store.listCapsules(workspaceId).filter((entry) => url.searchParams.get("includeDestroyed") === "true" || entry.status !== "destroyed") });
+    if (request.method === "GET") return json({ capsules: context.store.listCapsules(workspaceId).filter((entry) => appAccessRole(entry, actor.subject, context) && (url.searchParams.get("includeDestroyed") === "true" || entry.status !== "destroyed")) });
     if (request.method === "POST") {
       const body = await readObject(request);
       const name = requiredString(body.name, "name", 128);
@@ -130,8 +149,8 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
   if (capsuleMatch && request.method === "GET") {
     const capsule = context.store.capsule(decode(capsuleMatch[1]!));
     if (!capsule) return apiError("not_found", "Capsule not found", 404);
-    const denied = workspaceAccess(context.store, actor.subject, capsule.workspaceId);
-    return denied ?? json({ capsule });
+    if (!appAccessRole(capsule, actor.subject, context)) return apiError("app_access_denied", "App access denied", 403);
+    return json({ capsule });
   }
 
   if (url.pathname === "/api/v1/sources") {
@@ -186,8 +205,8 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
   if (planMatch && request.method === "POST") {
     const capsule = context.store.capsule(decode(planMatch[1]!));
     if (!capsule) return apiError("not_found", "Capsule not found", 404);
-    const denied = workspaceAccess(context.store, actor.subject, capsule.workspaceId);
-    if (denied) return denied;
+    if (!appAccessRole(capsule, actor.subject, context)) return apiError("app_access_denied", "App access denied", 403);
+    if (!capsule.workspaceId) return apiError("not_implemented", "Workspace-less plan fixtures are not implemented", 501);
     const run = await context.store.createRun({ workspaceId: capsule.workspaceId, capsuleId: capsule.id, type: "plan", status: "succeeded", requiresApproval: false, summary: "Development fixture plan; no infrastructure was changed", createdBy: actor.subject });
     return json({ run }, 201);
   }
@@ -283,6 +302,9 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
     return json({ interfaces });
   }
 
+  // This fixture server has no install-plan persistence/preflight model yet.
+  if (url.pathname === "/api/v1/install-plans") return apiError("not_found", "Route not found", 404);
+
   if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/v1/")) {
     return apiError("not_implemented", "This development server does not implement that Takosumi capability", 501);
   }
@@ -316,6 +338,87 @@ function listInterfaces(url: URL, actor: Actor, context: RouteContext): Response
     (actor.bootstrap || !permission || context.store.listBindings(iface.metadata.id).some((binding) => binding.status.phase === "Ready" && binding.spec.subjectRef.id === actor.publicSubject && binding.spec.permissions.includes(permission)))
   );
   return json({ interfaces });
+}
+
+function listApps(url: URL, actor: Actor, context: RouteContext): Response {
+  const rawLimit = url.searchParams.get("limit");
+  const limit = rawLimit === null ? 50 : Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) return apiError("invalid_request", "limit must be an integer from 1 to 100", 400);
+
+  // Explicit owner/member fixture records support Workspace-less apps. Legacy Capsules fall
+  // back to Workspace membership until the store-backed AppAccess resolver is available.
+  const apps = context.store.capsules()
+    .filter((capsule) => capsule.status !== "destroyed")
+    .flatMap((capsule) => {
+      const role = appAccessRole(capsule, actor.subject, context);
+      if (!role) return [];
+      const ownerAccountId = capsule.ownerAccountId ?? (capsule.workspaceId ? context.store.workspace(capsule.workspaceId)?.ownerUserId : undefined);
+      const owner = ownerAccountId ? context.store.principalBySubject(ownerAccountId) : undefined;
+      return {
+        capsuleId: capsule.id,
+        name: capsule.slug,
+        displayName: capsule.name,
+        role,
+        ownerDisplayName: owner?.name ?? ownerAccountId ?? "Unknown owner",
+        state: capsule.status,
+        primaryAction: "manage" as const,
+      };
+    })
+    .sort((left, right) => left.capsuleId.localeCompare(right.capsuleId));
+
+  const cursor = url.searchParams.get("cursor");
+  let start = 0;
+  if (cursor !== null) {
+    const cursorIndex = apps.findIndex((app) => app.capsuleId === cursor);
+    if (cursorIndex < 0) return apiError("invalid_request", "cursor does not identify an accessible app", 400);
+    start = cursorIndex + 1;
+  }
+  const page = apps.slice(start, start + limit);
+  return json({ apps: page, ...(start + page.length < apps.length ? { nextCursor: page.at(-1)!.capsuleId } : {}) });
+}
+
+function listAppMembers(capsuleId: string, actor: Actor, context: RouteContext): Response {
+  const capsule = context.store.capsule(capsuleId);
+  if (!capsule) return apiError("not_found", "Capsule not found", 404);
+  const role = appAccessRole(capsule, actor.subject, context);
+  if (!role) return apiError("app_access_denied", "App access denied", 403);
+  const ownerAccountId = capsule.ownerAccountId ?? (capsule.workspaceId ? context.store.workspace(capsule.workspaceId)?.ownerUserId : undefined);
+  if (!ownerAccountId) return apiError("not_found", "Capsule owner not found", 404);
+  const owner = context.store.principalBySubject(ownerAccountId);
+  const fixtureMembers = capsule.ownerAccountId
+    ? context.store.capsuleMembers(capsule.id).map((member) => ({ subject: member.accountId, status: member.status }))
+    : context.store.workspaceMemberSubjects(capsule.workspaceId!)
+      .filter((subject) => subject !== ownerAccountId)
+      .map((subject) => ({ subject, status: "active" as const }));
+  const members = fixtureMembers
+    .filter((member) => member.subject !== ownerAccountId)
+    .map((subject) => {
+      const principal = context.store.principalBySubject(subject.subject);
+      return {
+        accountId: subject.subject,
+        displayName: principal?.name ?? subject.subject,
+        ...(role === "owner" && principal ? { email: principal.email } : {}),
+        status: subject.status,
+      };
+    });
+
+  return json({
+    owner: {
+      accountId: ownerAccountId,
+      displayName: owner?.name ?? ownerAccountId,
+      ...(role === "owner" && owner ? { email: owner.email } : {}),
+    },
+    members,
+  });
+}
+
+function appAccessRole(capsule: DevCapsule, subject: string, context: RouteContext): "owner" | "member" | null {
+  if (capsule.ownerAccountId) {
+    if (capsule.ownerAccountId === subject) return "owner";
+    return context.store.capsuleMembers(capsule.id).some((member) => member.accountId === subject && member.status === "active") ? "member" : null;
+  }
+  if (!capsule.workspaceId || !context.store.canAccessWorkspace(subject, capsule.workspaceId)) return null;
+  return context.store.workspace(capsule.workspaceId)?.ownerUserId === subject ? "owner" : "member";
 }
 
 async function createInterface(request: Request, actor: Actor, context: RouteContext): Promise<Response> {

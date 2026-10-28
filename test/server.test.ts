@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
 import { createDevServer, type TakosumiDevServer } from "../src/server.ts";
 
 const origin = "http://127.0.0.1:8792";
@@ -91,6 +92,88 @@ describe("OIDC and OAuth", () => {
 });
 
 describe("product-neutral fixture control", () => {
+  test("projects legacy Workspace fixtures into owner-owned apps and retains legacy routes", async () => {
+    const fixture = ownershipFixture("owner");
+    const { server, close } = await serverWithFixture(fixture);
+    try {
+      const apps = await json(server, "/api/v1/apps", { headers: bootstrapHeaders });
+      expect(apps.apps).toEqual([expect.objectContaining({
+        capsuleId: "cap_fixture",
+        name: "sample-app",
+        displayName: "Sample App",
+        role: "owner",
+        ownerDisplayName: "Local Developer",
+        state: "active",
+        primaryAction: "manage",
+      })]);
+      const members = await json(server, "/api/v1/capsules/cap_fixture/members", { headers: bootstrapHeaders });
+      expect(members).toEqual({
+        owner: { accountId: "tsub_local", displayName: "Local Developer", email: "developer@local.test" },
+        members: [{ accountId: "tsub_member", displayName: "Fixture Member", email: "member@local.test", status: "active" }],
+      });
+
+      const legacyWorkspace = await json(server, "/api/v1/workspaces/ws_local", { headers: bootstrapHeaders });
+      expect(legacyWorkspace.workspace).toEqual(expect.objectContaining({ id: "ws_local" }));
+      const legacyCapsules = await json(server, "/api/v1/workspaces/ws_local/capsules", { headers: bootstrapHeaders });
+      expect(legacyCapsules.capsules).toHaveLength(1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("projects a Workspace member without exposing owner or other member emails", async () => {
+    const fixture = ownershipFixture("member");
+    const { server, close } = await serverWithFixture(fixture);
+    try {
+      const apps = await json(server, "/api/v1/apps", { headers: bootstrapHeaders });
+      expect(apps.apps).toEqual([expect.objectContaining({ capsuleId: "cap_fixture", role: "member" })]);
+      const members = await json(server, "/api/v1/capsules/cap_fixture/members", { headers: bootstrapHeaders });
+      expect(members).toEqual({
+        owner: { accountId: "tsub_owner", displayName: "Fixture Owner" },
+        members: [{ accountId: "tsub_local", displayName: "Local Developer", status: "active" }],
+      });
+      expect(await json(server, "/api/v1/connections", { headers: bootstrapHeaders })).toEqual({ connections: [] });
+      expect(await json(server, "/api/v1/usage", { headers: bootstrapHeaders })).toEqual({ usage: [] });
+    } finally {
+      await close();
+    }
+  });
+
+  test("projects a workspace-less app fixture using explicit owner and member records", async () => {
+    const fixture = ownershipFixture("member", true);
+    const { server, close } = await serverWithFixture(fixture);
+    try {
+      const apps = await json(server, "/api/v1/apps", { headers: bootstrapHeaders });
+      expect(apps.apps).toEqual([expect.objectContaining({ capsuleId: "cap_fixture", role: "member", ownerDisplayName: "Fixture Owner" })]);
+      const members = await json(server, "/api/v1/capsules/cap_fixture/members", { headers: bootstrapHeaders });
+      expect(members).toEqual({
+        owner: { accountId: "tsub_owner", displayName: "Fixture Owner" },
+        members: [{ accountId: "tsub_local", displayName: "Local Developer", status: "active" }],
+      });
+      expect((await request(server, "/api/v1/install-plans", { method: "POST", headers: bootstrapHeaders, body: "{}" })).status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+
+  test("does not let legacy Workspace membership grant access past explicit app membership", async () => {
+    const fixture = ownershipFixture("member");
+    const capsules = fixture.capsules as Array<Record<string, unknown>>;
+    capsules[0]!.ownerAccountId = "tsub_owner";
+    fixture.capsuleMembers = [];
+    const { server, close } = await serverWithFixture(fixture);
+    try {
+      expect((await json(server, "/api/v1/apps", { headers: bootstrapHeaders })).apps).toEqual([]);
+      const capsule = await request(server, "/api/v1/capsules/cap_fixture", { headers: bootstrapHeaders });
+      expect(capsule.status).toBe(403);
+      expect(await capsule.json()).toEqual(expect.objectContaining({ error: "app_access_denied" }));
+      const legacyCapsules = await json(server, "/api/v1/workspaces/ws_local/capsules", { headers: bootstrapHeaders });
+      expect(legacyCapsules.capsules).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
   test("creates a Workspace, Source and Capsule and simulates plan/apply", async () => {
     const server = await createDevServer();
     const workspaceResponse = await request(server, "/api/v1/workspaces", { method: "POST", headers: bootstrapHeaders, body: JSON.stringify({ handle: "sample-product", displayName: "Sample Product" }) });
@@ -146,6 +229,28 @@ async function oauthSession(server: TakosumiDevServer, clientId: string): Promis
   const tokens = await tokenResponse.json() as Record<string, string>;
   const userinfo = await json(server, "/oauth/userinfo", { headers: { authorization: `Bearer ${tokens.access_token}` } });
   return { accessToken: tokens.access_token!, subject: userinfo.sub as string };
+}
+
+function ownershipFixture(actorRole: "owner" | "member", workspaceLess = false): Record<string, unknown> {
+  const owner = { sub: actorRole === "owner" ? "tsub_local" : "tsub_owner", email: actorRole === "owner" ? "developer@local.test" : "owner@local.test", name: actorRole === "owner" ? "Local Developer" : "Fixture Owner" };
+  const member = { sub: actorRole === "owner" ? "tsub_member" : "tsub_local", email: actorRole === "owner" ? "member@local.test" : "developer@local.test", name: actorRole === "owner" ? "Fixture Member" : "Local Developer" };
+  return {
+    principals: actorRole === "owner" ? [owner, member] : [member, owner],
+    workspaces: workspaceLess ? [] : [{ id: "ws_local", handle: "local", displayName: "Local Workspace", type: "personal", ownerUserId: owner.sub, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    memberships: workspaceLess ? {} : { ws_local: [owner.sub, member.sub] },
+    sources: [],
+    capsules: [{ id: "cap_fixture", ...(workspaceLess ? { ownerAccountId: owner.sub } : { workspaceId: "ws_local" }), projectId: "prj_fixture", name: "Sample App", slug: "sample-app", sourceId: "src_fixture", installConfigId: "default", environment: "dev", currentStateGeneration: 1, status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    capsuleMembers: workspaceLess ? [{ capsuleId: "cap_fixture", accountId: member.sub, status: "active" }] : [],
+    runs: [],
+    interfaces: [],
+    bindings: [],
+  };
+}
+
+async function serverWithFixture(fixture: Record<string, unknown>): Promise<{ server: TakosumiDevServer; close: () => Promise<void> }> {
+  const path = `/root/dev/tmp/tk0118-dev-server-${crypto.randomUUID()}.json`;
+  await Bun.write(path, JSON.stringify(fixture));
+  return { server: await createDevServer({ stateFile: path }), close: () => rm(path, { force: true }) };
 }
 
 function request(server: TakosumiDevServer, path: string, init?: RequestInit): Promise<Response> {

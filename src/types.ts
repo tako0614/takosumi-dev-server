@@ -16,6 +16,13 @@ export interface DevWorkspace {
   readonly updatedAt: string;
 }
 
+export interface DevWorkspaceMember {
+  readonly workspaceId: string;
+  readonly accountId: string;
+  readonly roles: readonly ("owner" | "admin" | "member" | "viewer")[];
+  readonly status: "active" | "invited";
+}
+
 export interface DevCapsule {
   readonly id: string;
   readonly workspaceId?: string;
@@ -122,6 +129,7 @@ export interface DevFixture {
   readonly principals: readonly DevPrincipal[];
   readonly workspaces: readonly DevWorkspace[];
   readonly memberships: Readonly<Record<string, readonly string[]>>;
+  readonly workspaceMembers?: readonly DevWorkspaceMember[];
   readonly sources: readonly DevSource[];
   readonly capsules: readonly DevCapsule[];
   readonly capsuleMembers?: readonly DevCapsuleMember[];
@@ -134,6 +142,7 @@ export interface MutableDevFixture {
   principals: DevPrincipal[];
   workspaces: DevWorkspace[];
   memberships: Record<string, string[]>;
+  workspaceMembers: DevWorkspaceMember[];
   sources: DevSource[];
   capsules: DevCapsule[];
   capsuleMembers: DevCapsuleMember[];

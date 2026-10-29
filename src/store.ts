@@ -32,6 +32,7 @@ export function defaultFixture(): MutableDevFixture {
     principals: [principal],
     workspaces: [workspace],
     memberships: { [workspace.id]: [principal.sub] },
+    workspaceMembers: [],
     sources: [],
     capsules: [],
     capsuleMembers: [],
@@ -71,8 +72,12 @@ export class DevStore {
     return this.#state.memberships[workspaceId]?.includes(subject) ?? false;
   }
 
-  workspaceMemberSubjects(workspaceId: string): string[] {
-    return [...(this.#state.memberships[workspaceId] ?? [])];
+  legacyWorkspaceAppMemberSubjects(workspaceId: string): string[] {
+    return [...new Set(this.#state.workspaceMembers
+      .filter((member) => member.workspaceId === workspaceId && member.status === "active" &&
+        member.roles.some((role) => role === "owner" || role === "admin") &&
+        this.canAccessWorkspace(member.accountId, workspaceId))
+      .map((member) => member.accountId))];
   }
 
   listWorkspaces(subject: string): DevWorkspace[] {
@@ -230,6 +235,7 @@ function normalizeFixture(input: Partial<DevFixture>): MutableDevFixture {
     principals: [...(input.principals ?? defaults.principals)],
     workspaces: [...(input.workspaces ?? defaults.workspaces)],
     memberships: Object.fromEntries(Object.entries(input.memberships ?? defaults.memberships).map(([key, value]) => [key, [...value]])),
+    workspaceMembers: [...(input.workspaceMembers ?? [])],
     sources: [...(input.sources ?? [])],
     capsules: [...(input.capsules ?? [])],
     capsuleMembers: [...(input.capsuleMembers ?? [])],

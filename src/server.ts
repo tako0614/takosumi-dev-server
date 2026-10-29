@@ -99,7 +99,7 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
 
   if (url.pathname === "/api/v1/usage" && request.method === "GET") {
     // The fixture has no billing or usage records; never infer a payer from a legacy Workspace.
-    return json({ usage: [] });
+    return json({ usageEvents: [] });
   }
 
   if (url.pathname === "/api/v1/workspaces" && request.method === "GET") {
@@ -130,6 +130,7 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
     if (denied) return denied;
     if (request.method === "GET") return json({ capsules: context.store.listCapsules(workspaceId).filter((entry) => appAccessRole(entry, actor.subject, context) && (url.searchParams.get("includeDestroyed") === "true" || entry.status !== "destroyed")) });
     if (request.method === "POST") {
+      if (!legacyWorkspaceAppRole(workspaceId, actor.subject, context)) return apiError("app_access_denied", "App management access denied", 403);
       const body = await readObject(request);
       const name = requiredString(body.name, "name", 128);
       const sourceId = requiredString(body.sourceId, "sourceId", 256);
@@ -225,6 +226,10 @@ async function route(request: Request, url: URL, context: RouteContext): Promise
     if (!run) return apiError("not_found", "Run not found", 404);
     const denied = workspaceAccess(context.store, actor.subject, run.workspaceId);
     if (denied) return denied;
+    if (run.capsuleId) {
+      const capsule = context.store.capsule(run.capsuleId);
+      if (!capsule || !appAccessRole(capsule, actor.subject, context)) return apiError("app_access_denied", "App access denied", 403);
+    }
     if (runActionMatch[2] === "apply" && run.capsuleId) await context.store.activateCapsule(run.capsuleId);
     return json({ run: { ...run, status: "succeeded", requiresApproval: false } });
   }
@@ -345,8 +350,8 @@ function listApps(url: URL, actor: Actor, context: RouteContext): Response {
   const limit = rawLimit === null ? 50 : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) return apiError("invalid_request", "limit must be an integer from 1 to 100", 400);
 
-  // Explicit owner/member fixture records support Workspace-less apps. Legacy Capsules fall
-  // back to Workspace membership until the store-backed AppAccess resolver is available.
+  // Explicit app records are authoritative. Legacy fixtures migrate only the Workspace
+  // owner and active administrators; a subject-only membership is not role evidence.
   const apps = context.store.capsules()
     .filter((capsule) => capsule.status !== "destroyed")
     .flatMap((capsule) => {
@@ -360,8 +365,7 @@ function listApps(url: URL, actor: Actor, context: RouteContext): Response {
         displayName: capsule.name,
         role,
         ownerDisplayName: owner?.name ?? ownerAccountId ?? "Unknown owner",
-        state: capsule.status,
-        primaryAction: "manage" as const,
+        ...fixtureAppStatus(capsule),
       };
     })
     .sort((left, right) => left.capsuleId.localeCompare(right.capsuleId));
@@ -377,6 +381,14 @@ function listApps(url: URL, actor: Actor, context: RouteContext): Response {
   return json({ apps: page, ...(start + page.length < apps.length ? { nextCursor: page.at(-1)!.capsuleId } : {}) });
 }
 
+function fixtureAppStatus(capsule: DevCapsule) {
+  // Fixtures have no screen or in-flight lifecycle ledger to claim Open or Updating.
+  if (capsule.status === "disabled") return { state: "stopped", primaryAction: "none" } as const;
+  if (capsule.status === "error") return { state: "needs_attention", primaryAction: "retry" } as const;
+  if (capsule.currentStateGeneration === 0) return { state: "installing", primaryAction: "none" } as const;
+  return { state: "installed", primaryAction: "view_resources" } as const;
+}
+
 function listAppMembers(capsuleId: string, actor: Actor, context: RouteContext): Response {
   const capsule = context.store.capsule(capsuleId);
   if (!capsule) return apiError("not_found", "Capsule not found", 404);
@@ -387,7 +399,7 @@ function listAppMembers(capsuleId: string, actor: Actor, context: RouteContext):
   const owner = context.store.principalBySubject(ownerAccountId);
   const fixtureMembers = capsule.ownerAccountId
     ? context.store.capsuleMembers(capsule.id).map((member) => ({ subject: member.accountId, status: member.status }))
-    : context.store.workspaceMemberSubjects(capsule.workspaceId!)
+    : context.store.legacyWorkspaceAppMemberSubjects(capsule.workspaceId!)
       .filter((subject) => subject !== ownerAccountId)
       .map((subject) => ({ subject, status: "active" as const }));
   const members = fixtureMembers
@@ -417,8 +429,14 @@ function appAccessRole(capsule: DevCapsule, subject: string, context: RouteConte
     if (capsule.ownerAccountId === subject) return "owner";
     return context.store.capsuleMembers(capsule.id).some((member) => member.accountId === subject && member.status === "active") ? "member" : null;
   }
-  if (!capsule.workspaceId || !context.store.canAccessWorkspace(subject, capsule.workspaceId)) return null;
-  return context.store.workspace(capsule.workspaceId)?.ownerUserId === subject ? "owner" : "member";
+  return capsule.workspaceId ? legacyWorkspaceAppRole(capsule.workspaceId, subject, context) : null;
+}
+
+function legacyWorkspaceAppRole(workspaceId: string, subject: string, context: RouteContext): "owner" | "member" | null {
+  const workspace = context.store.workspace(workspaceId);
+  if (!workspace) return null;
+  if (workspace.ownerUserId === subject) return "owner";
+  return context.store.legacyWorkspaceAppMemberSubjects(workspaceId).includes(subject) ? "member" : null;
 }
 
 async function createInterface(request: Request, actor: Actor, context: RouteContext): Promise<Response> {

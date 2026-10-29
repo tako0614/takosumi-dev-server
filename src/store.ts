@@ -1,5 +1,6 @@
 import type {
   DevCapsule,
+  DevCapsuleMember,
   DevFixture,
   DevInterface,
   DevInterfaceBinding,
@@ -31,8 +32,10 @@ export function defaultFixture(): MutableDevFixture {
     principals: [principal],
     workspaces: [workspace],
     memberships: { [workspace.id]: [principal.sub] },
+    workspaceMembers: [],
     sources: [],
     capsules: [],
+    capsuleMembers: [],
     runs: [],
     interfaces: [],
     bindings: [],
@@ -67,6 +70,14 @@ export class DevStore {
 
   canAccessWorkspace(subject: string, workspaceId: string): boolean {
     return this.#state.memberships[workspaceId]?.includes(subject) ?? false;
+  }
+
+  legacyWorkspaceAppMemberSubjects(workspaceId: string): string[] {
+    return [...new Set(this.#state.workspaceMembers
+      .filter((member) => member.workspaceId === workspaceId && member.status === "active" &&
+        member.roles.some((role) => role === "owner" || role === "admin") &&
+        this.canAccessWorkspace(member.accountId, workspaceId))
+      .map((member) => member.accountId))];
   }
 
   listWorkspaces(subject: string): DevWorkspace[] {
@@ -122,6 +133,14 @@ export class DevStore {
 
   listCapsules(workspaceId: string): DevCapsule[] {
     return this.#state.capsules.filter((entry) => entry.workspaceId === workspaceId);
+  }
+
+  capsules(): DevCapsule[] {
+    return [...this.#state.capsules];
+  }
+
+  capsuleMembers(capsuleId: string): DevCapsuleMember[] {
+    return this.#state.capsuleMembers.filter((entry) => entry.capsuleId === capsuleId);
   }
 
   capsule(id: string): DevCapsule | undefined {
@@ -216,8 +235,10 @@ function normalizeFixture(input: Partial<DevFixture>): MutableDevFixture {
     principals: [...(input.principals ?? defaults.principals)],
     workspaces: [...(input.workspaces ?? defaults.workspaces)],
     memberships: Object.fromEntries(Object.entries(input.memberships ?? defaults.memberships).map(([key, value]) => [key, [...value]])),
+    workspaceMembers: [...(input.workspaceMembers ?? [])],
     sources: [...(input.sources ?? [])],
     capsules: [...(input.capsules ?? [])],
+    capsuleMembers: [...(input.capsuleMembers ?? [])],
     runs: [...(input.runs ?? [])],
     interfaces: [...(input.interfaces ?? [])],
     bindings: [...(input.bindings ?? [])],

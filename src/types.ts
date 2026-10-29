@@ -16,9 +16,17 @@ export interface DevWorkspace {
   readonly updatedAt: string;
 }
 
+export interface DevWorkspaceMember {
+  readonly workspaceId: string;
+  readonly accountId: string;
+  readonly roles: readonly ("owner" | "admin" | "member" | "viewer")[];
+  readonly status: "active" | "invited";
+}
+
 export interface DevCapsule {
   readonly id: string;
-  readonly workspaceId: string;
+  readonly workspaceId?: string;
+  readonly ownerAccountId?: string;
   readonly projectId: string;
   readonly name: string;
   readonly slug: string;
@@ -29,6 +37,12 @@ export interface DevCapsule {
   readonly status: "pending" | "active" | "stale" | "error" | "disabled" | "destroyed";
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface DevCapsuleMember {
+  readonly capsuleId: string;
+  readonly accountId: string;
+  readonly status: "active" | "invited";
 }
 
 export interface DevSource {
@@ -115,8 +129,10 @@ export interface DevFixture {
   readonly principals: readonly DevPrincipal[];
   readonly workspaces: readonly DevWorkspace[];
   readonly memberships: Readonly<Record<string, readonly string[]>>;
+  readonly workspaceMembers?: readonly DevWorkspaceMember[];
   readonly sources: readonly DevSource[];
   readonly capsules: readonly DevCapsule[];
+  readonly capsuleMembers?: readonly DevCapsuleMember[];
   readonly runs: readonly DevRun[];
   readonly interfaces: readonly DevInterface[];
   readonly bindings: readonly DevInterfaceBinding[];
@@ -126,8 +142,10 @@ export interface MutableDevFixture {
   principals: DevPrincipal[];
   workspaces: DevWorkspace[];
   memberships: Record<string, string[]>;
+  workspaceMembers: DevWorkspaceMember[];
   sources: DevSource[];
   capsules: DevCapsule[];
+  capsuleMembers: DevCapsuleMember[];
   runs: DevRun[];
   interfaces: DevInterface[];
   bindings: DevInterfaceBinding[];
